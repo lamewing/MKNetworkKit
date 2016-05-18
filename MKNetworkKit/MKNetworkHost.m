@@ -168,8 +168,75 @@ NSString *const kMKCacheDefaultDirectoryName = @"com.mknetworkkit.mkcache";
     return;
   }
   
-  request.task = [self.backgroundSession uploadTaskWithRequest:request.request
-                                                      fromData:request.multipartFormData];
+  request.task = [self.defaultSession uploadTaskWithRequest:request.request
+                                                      fromData:request.multipartFormData completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+                                                          if(request.state == MKNKRequestStateCancelled) {
+                                                              
+                                                              request.response = (NSHTTPURLResponse*) response;
+                                                              if(error) {
+                                                                  request.error = error;
+                                                              }
+                                                              if(data) {
+                                                                  request.responseData = data;
+                                                              }
+                                                              return;
+                                                          }
+                                                          if(!response) {
+                                                              
+                                                              request.response = (NSHTTPURLResponse*) response;
+                                                              request.error = error;
+                                                              request.responseData = data;
+                                                              request.state = MKNKRequestStateError;
+                                                              return;
+                                                          }
+                                                          
+                                                          request.response = (NSHTTPURLResponse*) response;
+                                                          
+                                                          if(request.response.statusCode >= 200 && request.response.statusCode < 300) {
+                                                              
+                                                              request.responseData = data;
+                                                              request.error = error;
+                                                          } else if(request.response.statusCode == 304) {
+                                                              
+                                                              // don't do anything
+                                                              
+                                                          } else if(request.response.statusCode >= 400) {
+                                                              request.responseData = data;
+                                                              NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+                                                              if(response) userInfo[@"response"] = response;
+                                                              if(error) userInfo[@"error"] = error;
+                                                              
+                                                              NSError *httpError = [NSError errorWithDomain:@"com.mknetworkkit.httperrordomain"
+                                                                                                       code:request.response.statusCode
+                                                                                                   userInfo:userInfo];
+                                                              request.error = httpError;
+                                                              
+                                                              // if subclass of host overrides errorForRequest: they can provide more insightful error objects by parsing the response body.
+                                                              // the super class implementation just returns the same error object set in previous line
+                                                              request.error = [self errorForCompletedRequest:request];
+                                                          }
+                                                          
+                                                          if(!request.error) {
+                                                              
+                                                              if(request.cacheable) {
+                                                                  self.dataCache[@(request.hash)] = data;
+                                                                  self.responseCache[@(request.hash)] = response;
+                                                              }
+                                                              
+                                                              dispatch_sync(self.runningTasksSynchronizingQueue, ^{
+                                                                  [self.activeTasks removeObject:request];
+                                                              });
+                                                              
+                                                              request.state = MKNKRequestStateCompleted;
+                                                          } else {
+                                                              
+                                                              dispatch_sync(self.runningTasksSynchronizingQueue, ^{
+                                                                  [self.activeTasks removeObject:request];
+                                                              });
+                                                              request.state = MKNKRequestStateError;
+                                                              NSLog(@"%@", request);
+                                                          }
+                                                      }];
   dispatch_sync(self.runningTasksSynchronizingQueue, ^{
     [self.activeTasks addObject:request];
   });
